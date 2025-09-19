@@ -1,0 +1,164 @@
+version: '3.9'
+
+services:
+  batchoptimizer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-1.0.0}
+    image: batchoptimizer:latest
+    container_name: batchoptimizer
+    restart: unless-stopped
+    user: "65534:65534"  # nonroot user
+    read_only: true       # Read-only root filesystem
+    security_opt:
+      - no-new-privileges:true
+      - apparmor:docker-default
+      - seccomp:default
+    cap_drop:
+      - ALL              # Drop all capabilities
+    cap_add:
+      - NET_BIND_SERVICE # Only if needed for port < 1024
+    networks:
+      - optimizer_net
+    environment:
+      # Go runtime optimizations
+      GOMAXPROCS: "4"
+      GOGC: "100"
+      GOMEMLIMIT: "1GiB"
+      # Application config
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 9000
+      LOG_LEVEL: info
+    volumes:
+      # Use tmpfs for temporary files (RAM-based, more secure)
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 100M
+          mode: 1777
+    healthcheck:
+      test: ["CMD", "/app/batchoptimizer", "-health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=batchoptimizer"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:23-alpine
+    container_name: clickhouse
+    restart: unless-stopped
+    user: "101:101"  # clickhouse user
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE
+      - SETUID
+      - SETGID
+    networks:
+      - optimizer_net
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: optimizer
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-SecurePass123!}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse:rw
+      - clickhouse_logs:/var/log/clickhouse-server:rw
+      - ./configs/clickhouse:/etc/clickhouse-server/config.d:ro
+    ports:
+      - "127.0.0.1:8123:8123"  # HTTP interface (localhost only)
+      - "127.0.0.1:9000:9000"  # Native interface (localhost only)
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+        labels: "service=clickhouse"
+
+  # Development environment with hot reload
+  batchoptimizer-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: batchoptimizer:dev
+    container_name: batchoptimizer-dev
+    profiles: ["dev"]
+    user: "10001:10001"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - optimizer_net
+    environment:
+      GOMAXPROCS: "4"
+      GOGC: "100"
+      GOMEMLIMIT: "2GiB"
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 9000
+      LOG_LEVEL: debug
+    volumes:
+      - .:/app:ro
+      - go_modules:/go/pkg/mod:rw
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 200M
+    ports:
+      - "127.0.0.1:8080:8080"  # App port
+      - "127.0.0.1:2345:2345"  # Debugger port
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+networks:
+  optimizer_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+    driver_opts:
+      com.docker.network.bridge.name: br-optimizer
+
+volumes:
+  clickhouse_data:
+    driver: local
+  clickhouse_logs:
+    driver: local
+  go_modules:
+    driver: local

@@ -1,0 +1,14 @@
+timestamp: timestamp
+values: 
+  - value
+groupby: []
+unique: []
+method: sum
+window: 1m
+workers: 4
+
+nats:
+  url: nats://localhost:4222
+  subject: timeseries.raw
+  queue: compressor
+  output_subject: timeseries.compressed
